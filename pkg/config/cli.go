@@ -68,6 +68,7 @@ type ControllerOptions struct {
 	K0sCloudProviderUpdateFrequency time.Duration
 	NodeComponents                  *component.Manager
 	EnableDynamicConfig             bool
+	EnableStaticPods                bool
 }
 
 // Shared worker cli flags
@@ -172,6 +173,7 @@ func GetControllerFlags() *pflag.FlagSet {
 	flagset.IntVar(&controllerOpts.K0sCloudProviderPort, "k0s-cloud-provider-port", cloudprovider.CloudControllerManagerPort, "the port that k0s-cloud-provider binds on")
 	flagset.AddFlagSet(GetCriSocketFlag())
 	flagset.BoolVar(&controllerOpts.EnableDynamicConfig, "enable-dynamic-config", false, "enable cluster-wide dynamic config based on custom resource")
+	flagset.BoolVar(&controllerOpts.EnableStaticPods, "enable-static-pods", false, "enable running static pods")
 
 	return flagset
 }

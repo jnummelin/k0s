@@ -40,6 +40,7 @@ func NewCRD(s manifestsSaver) *CRD {
 
 var bundles = []string{
 	"helm",
+	"ctrlpods",
 }
 
 // Init  (c CRD) Init() error {

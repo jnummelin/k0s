@@ -36,6 +36,7 @@ type ClientFactoryInterface interface {
 	GetDynamicClient() (dynamic.Interface, error)
 	GetDiscoveryClient() (discovery.CachedDiscoveryInterface, error)
 	GetConfigClient() (cfgClient.ClusterConfigInterface, error)
+	GetRestConfig() (*rest.Config, error)
 }
 
 // NewAdminClientFactory creates a new factory that loads the admin kubeconfig based client
@@ -166,6 +167,26 @@ func (c *ClientFactory) GetConfigClient() (cfgClient.ClusterConfigInterface, err
 	}
 	c.configClient = configClient.ClusterConfigs(constant.ClusterConfigNamespace)
 	return c.configClient, nil
+}
+
+func (c *ClientFactory) GetRestConfig() (*rest.Config, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	var err error
+	// FIXME Need to separate the rest config creation to some common func
+	if c.restConfig == nil {
+		c.restConfig, err = clientcmd.BuildConfigFromFlags("", c.configPath)
+		if err != nil {
+			return c.restConfig, fmt.Errorf("failed to load kubeconfig: %w", err)
+		}
+		// We're always running the client on the same host as the API, no need to compress
+		c.restConfig.DisableCompression = true
+		// To mitigate stack applier bursts in startup
+		c.restConfig.QPS = 40.0
+		c.restConfig.Burst = 400.0
+	}
+
+	return c.restConfig, nil
 }
 
 // NewClient creates new k8s client based of the given kubeconfig

@@ -182,6 +182,10 @@ manifests: .helmCRD .cfgCRD
 .cfgCRD:
 	cd $(ROOT_DIR)/pkg/apis/k0s.k0sproject.io/v1beta1 && controller-gen crd paths="./..." output:crd:artifacts:config=$(ROOT_DIR)/static/manifests/v1beta1/CustomResourceDefinition object
 
+.ctrlpodCRD:
+	cd $(ROOT_DIR)/pkg/apis/ctrlpods.k0sproject.io/v1beta1 && controller-gen crd paths="./..." output:crd:artifacts:config=$(ROOT_DIR)/static/manifests/ctrlpods/CustomResourceDefinition object
+
+
 static/gen_manifests.go: $(shell find static/manifests -type f)
 	$(go_bindata) -o static/gen_manifests.go -pkg static -prefix static static/...
 

@@ -44,7 +44,10 @@ import (
 	"github.com/k0sproject/k0s/pkg/component"
 	"github.com/k0sproject/k0s/pkg/component/controller"
 	"github.com/k0sproject/k0s/pkg/component/controller/clusterconfig"
+	"github.com/k0sproject/k0s/pkg/component/controller/controllerpods"
+	"github.com/k0sproject/k0s/pkg/component/controller/standalonekubelet"
 	"github.com/k0sproject/k0s/pkg/component/status"
+	"github.com/k0sproject/k0s/pkg/component/worker"
 	"github.com/k0sproject/k0s/pkg/config"
 	"github.com/k0sproject/k0s/pkg/constant"
 	"github.com/k0sproject/k0s/pkg/kubernetes"
@@ -253,6 +256,21 @@ func (c *CmdOpts) startController(ctx context.Context) error {
 		Socket: config.StatusSocket,
 	})
 
+	if workload && c.EnableStaticPods {
+		return fmt.Errorf("cannot combine --enable-static-pods with --singe or --enable-worker")
+	}
+
+	if !workload && c.EnableStaticPods {
+		logrus.Info("enabling controller static pods")
+		c.NodeComponents.Add(ctx, &worker.ContainerD{
+			LogLevel: c.Logging["containerd"],
+			K0sVars:  c.K0sVars,
+		})
+		c.NodeComponents.Add(ctx, &standalonekubelet.Kubelet{
+			K0sVars: c.K0sVars,
+		})
+	}
+
 	perfTimer.Checkpoint("starting-component-init")
 	// init Node components
 	if err := c.NodeComponents.Init(); err != nil {
@@ -260,7 +278,7 @@ func (c *CmdOpts) startController(ctx context.Context) error {
 	}
 	perfTimer.Checkpoint("finished-node-component-init")
 
-	// Set up signal handling. Use buffered channel so we dont miss
+	// Set up signal handling. Use buffered channel so we don't miss
 	// signals during startup
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -309,6 +327,17 @@ func (c *CmdOpts) startController(ctx context.Context) error {
 		K0sVars:           c.K0sVars,
 		KubeClientFactory: adminClientFactory,
 	})
+
+	rc, err := adminClientFactory.GetRestConfig()
+	if err != nil {
+		return err
+	}
+	controllerpods, err := controllerpods.New(rc, c.K0sVars.DataDir)
+	if err != nil {
+		return err
+	}
+
+	c.ClusterComponents.Add(ctx, controllerpods)
 
 	perfTimer.Checkpoint("starting-cluster-components-init")
 	// init Cluster components
@@ -375,7 +404,7 @@ func (c *CmdOpts) startController(ctx context.Context) error {
 				logrus.Errorf("ClusterComponents.Stop: %s", err)
 			}
 			if err := c.NodeComponents.Stop(); err != nil {
-				logrus.Errorf("NodeCompnents.Stop: %s", err)
+				logrus.Errorf("NodeComponents.Stop: %s", err)
 			}
 			return err
 		}
