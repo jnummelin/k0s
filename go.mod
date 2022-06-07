@@ -46,7 +46,7 @@ require (
 	go.etcd.io/etcd/client/v3 v3.5.4
 	go.etcd.io/etcd/etcdutl/v3 v3.5.4
 	go.uber.org/zap v1.19.1
-	golang.org/x/crypto v0.0.0-20220131195533-30dcbda58838
+	golang.org/x/crypto v0.0.0-20220315160706-3147a52a75dd
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 	golang.org/x/sys v0.0.0-20211116061358-0a5406a5449c
 	google.golang.org/grpc v1.40.0
