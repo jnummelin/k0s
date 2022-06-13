@@ -15,14 +15,15 @@ jobs:
     # OR
     # when already merged PR is labeled with backport labels
     if: >
-      (
-        github.event_name == 'pull_request' &&
-        github.event.pull_request.merged
-      ) || (
-        github.event_name == 'labeled' &&
-        github.event.pull_request.merged &&
-        startsWith('backport', github.event.label.name)
+      github.event.pull_request.merged
+      && (
+        github.event.action == 'closed'
+        || (
+          github.event.action == 'labeled'
+          && startsWith(github.event.label.name, 'backport')
+        )
       )
+
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
