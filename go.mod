@@ -58,7 +58,7 @@ require (
 	golang.org/x/sys v0.41.0
 	golang.org/x/text v0.34.0
 	golang.org/x/tools v0.42.0
-	google.golang.org/grpc v1.79.0
+	google.golang.org/grpc v1.79.1
 	helm.sh/helm/v3 v3.18.6
 	oras.land/oras-go/v2 v2.6.0
 )
