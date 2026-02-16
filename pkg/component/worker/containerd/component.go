@@ -14,7 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,7 +25,6 @@ import (
 
 	"github.com/k0sproject/k0s/internal/pkg/dir"
 	"github.com/k0sproject/k0s/internal/pkg/file"
-	"github.com/k0sproject/k0s/pkg/assets"
 	"github.com/k0sproject/k0s/pkg/component/manager"
 	workerconfig "github.com/k0sproject/k0s/pkg/component/worker/config"
 	"github.com/k0sproject/k0s/pkg/config"
@@ -41,39 +40,29 @@ const containerdTomlHeader = `# k0s_managed=true
 # If you wish to override the config, remove the first line and replace this file with your custom configuration.
 # For reference see https://github.com/containerd/containerd/blob/main/docs/man/containerd-config.toml.5.md
 `
-const confPathPosix = "/etc/k0s/containerd.toml"
-const confPathWindows = "C:\\Program Files\\containerd\\config.toml"
-
-const importsPathPosix = "/etc/k0s/containerd.d/"
-const importsPathWindows = "C:\\etc\\k0s\\containerd.d\\"
 
 // Component implements the component interface to manage containerd as a k0s component.
 type Component struct {
-	supervisor    supervisor.Supervisor
 	LogLevel      string
 	K0sVars       *config.CfgVars
 	Profile       *workerconfig.Profile
-	binaries      []string
 	OCIBundlePath string
-	confPath      string
-	importsPath   string
+
+	executablePath string
+	confPath       string
+	importsPath    string
+
+	reloadConfig func()
+	stop         func() error
 }
 
 func NewComponent(logLevel string, vars *config.CfgVars, profile *workerconfig.Profile) *Component {
 	c := &Component{
-		LogLevel: logLevel,
-		K0sVars:  vars,
-		Profile:  profile,
-	}
-
-	if runtime.GOOS == "windows" {
-		c.binaries = []string{"containerd.exe", "containerd-shim-runhcs-v1.exe"}
-		c.confPath = confPathWindows
-		c.importsPath = importsPathWindows
-	} else {
-		c.binaries = []string{"containerd", "containerd-shim", "containerd-shim-runc-v2", "runc"}
-		c.confPath = confPathPosix
-		c.importsPath = importsPathPosix
+		LogLevel:    logLevel,
+		K0sVars:     vars,
+		Profile:     profile,
+		confPath:    defaultConfPath,
+		importsPath: defaultImportsPath,
 	}
 	return c
 }
@@ -83,19 +72,14 @@ var _ manager.Component = (*Component)(nil)
 // Init extracts the needed binaries
 func (c *Component) Init(ctx context.Context) error {
 	g, _ := errgroup.WithContext(ctx)
-	for _, bin := range c.binaries {
+
+	g.Go(func() (err error) {
+		c.executablePath, err = stageExecutable(c.K0sVars.BinDir, "containerd")
+		return err
+	})
+	for _, bin := range additionalExecutableNames {
 		g.Go(func() error {
-			err := assets.Stage(c.K0sVars.BinDir, bin)
-			// Simply ignore the "running executable" problem on Windows for
-			// now. Whenever there's a permission error on Windows and the
-			// target file exists, log the error and continue.
-			if err != nil &&
-				runtime.GOOS == "windows" &&
-				errors.Is(err, os.ErrPermission) &&
-				file.Exists(filepath.Join(c.K0sVars.BinDir, bin)) {
-				logrus.WithField("component", "containerd").WithError(err).Error("Failed to replace ", bin)
-				return nil
-			}
+			_, err := stageExecutable(c.K0sVars.BinDir, bin)
 			return err
 		})
 	}
@@ -103,25 +87,25 @@ func (c *Component) Init(ctx context.Context) error {
 		return err
 	}
 
-	if err := c.windowsInit(); err != nil {
-		return fmt.Errorf("windows init failed: %w", err)
-	}
+	// if err := c.windowsInit(); err != nil {
+	// 	return fmt.Errorf("windows init failed: %w", err)
+	// }
 
 	return nil
 }
 
-func (c *Component) windowsInit() error {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-	// On windows we need always run containerd.exe as a service
-	// https://kubernetes.io/docs/tasks/configure-pod-container/create-hostprocess-pod/#troubleshooting-hostprocess-containers
-	command := fmt.Sprintf("if (-not (Get-Service -Name containerd -ErrorAction SilentlyContinue)) { %s\\containerd.exe --register-service}", c.K0sVars.BinDir)
-	return winExecute(command)
-}
+// func (c *Component) windowsInit() error {
+// 	if runtime.GOOS != "windows" {
+// 		return nil
+// 	}
+// 	// On windows we need always run containerd.exe as a service
+// 	// https://kubernetes.io/docs/tasks/configure-pod-container/create-hostprocess-pod/#troubleshooting-hostprocess-containers
+// 	command := fmt.Sprintf("if (-not (Get-Service -Name containerd -ErrorAction SilentlyContinue)) { %s\\containerd.exe --register-service}", c.K0sVars.BinDir)
+// 	return winExecute(command)
+// }
 
 // Run runs containerd.
-func (c *Component) Start(ctx context.Context) error {
+func (c *Component) Start(ctx context.Context) (err error) {
 	log := logrus.WithField("component", "containerd")
 	log.Info("Starting containerd")
 
@@ -129,35 +113,66 @@ func (c *Component) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to setup containerd config: %w", err)
 	}
 
-	if runtime.GOOS == "windows" {
-		if err := c.windowsStart(ctx); err != nil {
-			return fmt.Errorf("failed to start windows server: %w", err)
-		}
-	} else {
-		c.supervisor = supervisor.Supervisor{
-			Name:    "containerd",
-			BinPath: assets.BinPath("containerd", c.K0sVars.BinDir),
-			RunDir:  c.K0sVars.RunDir,
-			DataDir: c.K0sVars.DataDir,
-			Args: []string{
-				"--root=" + filepath.Join(c.K0sVars.DataDir, "containerd"),
-				"--state=" + filepath.Join(c.K0sVars.RunDir, "containerd"),
-				"--address=" + Address(c.K0sVars.RunDir),
-				"--log-level=" + c.LogLevel,
-				"--config=" + c.confPath,
-			},
-		}
+	// if runtime.GOOS == "windows" {
+	// 	if err := c.windowsStart(ctx); err != nil {
+	// 		return fmt.Errorf("failed to start windows server: %w", err)
+	// 	}
+	// } else {
+	supervisor := &supervisor.Supervisor{
+		Name:    "containerd",
+		BinPath: c.executablePath,
+		RunDir:  c.K0sVars.RunDir,
+		DataDir: c.K0sVars.DataDir,
+		Args: []string{
+			"--root=" + filepath.Join(c.K0sVars.DataDir, "containerd"),
+			"--state=" + filepath.Join(c.K0sVars.RunDir, "containerd"),
+			"--address=" + Address(c.K0sVars.RunDir), // FIXME will this work on Windows?
+			"--log-level=" + c.LogLevel,
+			"--config=" + c.confPath,
+		},
+	}
 
-		if err := c.supervisor.Supervise(); err != nil {
-			return err
+	if err := supervisor.Supervise(); err != nil {
+		return err
+	}
+	// }
+
+	cctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	var stopSupervisor sync.Once
+	stop := func() error {
+		cancel()
+		var stopErr error
+		stopSupervisor.Do(func() { stopErr = supervisor.Stop() })
+		wg.Wait()
+		return stopErr
+	}
+	c.reloadConfig = func() {
+		p := supervisor.GetProcess()
+		if err := p.Signal(syscall.SIGHUP); err != nil {
+			// FIXME will never work on Windows!
+			log.WithError(err).Warn("failed to send SIGHUP")
 		}
 	}
 
-	go c.watchDropinConfigs(ctx)
+	defer func() {
+		if err == nil {
+			c.stop = stop
+		} else {
+			err = errors.Join(err, stop())
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		wait.UntilWithContext(cctx, c.watchDropinConfigs, 30*time.Second)
+		log.Info("Stopped to watch for drop-ins")
+	}()
 
 	log.Debug("Waiting for containerd")
 	var lastErr error
-	err := wait.ExponentialBackoffWithContext(ctx, wait.Backoff{
+	err = wait.ExponentialBackoffWithContext(ctx, wait.Backoff{
 		Duration: 100 * time.Millisecond, Factor: 1.2, Jitter: 0.05, Steps: 30,
 	}, func(ctx context.Context) (bool, error) {
 		rt := containerruntime.NewContainerRuntime(Endpoint(c.K0sVars.RunDir))
@@ -180,19 +195,19 @@ func (c *Component) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *Component) windowsStart(_ context.Context) error {
-	if err := winExecute("Start-Service containerd"); err != nil {
-		return fmt.Errorf("failed to start Windows Service %q: %w", "containerd", err)
-	}
-	return nil
-}
+// func (c *Component) windowsStart(_ context.Context) error {
+// 	if err := winExecute("Start-Service containerd"); err != nil {
+// 		return fmt.Errorf("failed to start Windows Service %q: %w", "containerd", err)
+// 	}
+// 	return nil
+// }
 
-func (c *Component) windowsStop() error {
-	if err := winExecute("Stop-Service containerd"); err != nil {
-		return fmt.Errorf("failed to stop Windows Service %q: %w", "containerd", err)
-	}
-	return nil
-}
+// func (c *Component) windowsStop() error {
+// 	if err := winExecute("Stop-Service containerd"); err != nil {
+// 		return fmt.Errorf("failed to stop Windows Service %q: %w", "containerd", err)
+// 	}
+// 	return nil
+// }
 
 func (c *Component) setupConfig() error {
 	// Check if the config file is user managed
@@ -261,13 +276,30 @@ func (c *Component) watchDropinConfigs(ctx context.Context) {
 		log.WithError(err).Error("failed to create watcher for drop-ins")
 		return
 	}
-	defer watcher.Close()
 
-	err = watcher.Add(c.importsPath)
-	if err != nil {
+	if err = watcher.Add(c.importsPath); err != nil {
+		err := errors.Join(err, watcher.Close())
 		log.WithError(err).Error("failed to watch for drop-ins")
 		return
 	}
+
+	// Consume and log any errors from watcher.
+	// Close the watcher when the context closes.
+	go func() {
+		defer func() {
+			if err := watcher.Close(); err != nil {
+				log.WithError(err).Error("Failed to close watcher for drop-ins")
+			}
+		}()
+
+		select {
+		case <-ctx.Done():
+		case err, ok := <-watcher.Errors:
+			if ok {
+				log.WithError(err).Error("error while watching drop-ins")
+			}
+		}
+	}()
 
 	debouncer := debounce.Debouncer[fsnotify.Event]{
 		Input:   watcher.Events,
@@ -283,23 +315,8 @@ func (c *Component) watchDropinConfigs(ctx context.Context) {
 		Callback: func(fsnotify.Event) { c.restart() },
 	}
 
-	// Consume and log any errors from watcher
-	go func() {
-		for {
-			err, ok := <-watcher.Errors
-			if !ok {
-				return
-			}
-			log.WithError(err).Error("error while watching drop-ins")
-		}
-	}()
-
 	log.Infof("started to watch events on %s", c.importsPath)
-
-	err = debouncer.Run(ctx)
-	if err != nil {
-		log.WithError(err).Warn("dropin watch bouncer exited with error")
-	}
+	_ = debouncer.Run(context.Background()) // Will return as soon as the watcher is closed.
 }
 
 func (c *Component) restart() {
@@ -310,31 +327,18 @@ func (c *Component) restart() {
 		log.WithError(err).Warn("failed to resolve config")
 		return
 	}
-	if runtime.GOOS == "windows" {
 
-		if err := c.windowsStop(); err != nil {
-			log.WithError(err).Warn("failed to stop windows service")
-			return
-		}
-		if err := c.windowsStart(context.Background()); err != nil {
-			log.WithError(err).Warn("failed to start windows service")
-			return
-		}
-	} else {
-		p := c.supervisor.GetProcess()
-		if err := p.Signal(syscall.SIGHUP); err != nil {
-			log.WithError(err).Warn("failed to send SIGHUP")
-		}
-
-	}
+	c.reloadConfig()
 }
 
 // Stop stops containerd.
 func (c *Component) Stop() error {
-	if runtime.GOOS == "windows" {
-		return c.windowsStop()
+	// if runtime.GOOS == "windows" {
+	// 	return c.windowsStop()
+	// }
+	if stop := c.stop; stop != nil {
+		return stop()
 	}
-	c.supervisor.Stop()
 	return nil
 }
 

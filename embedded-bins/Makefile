@@ -6,6 +6,22 @@ export GOOS
 TARGET_OS ?= linux
 export TARGET_OS
 
+ifndef TARGET_ARCH
+HOST_HARDWARE := $(shell uname -m)
+ifneq (, $(filter $(HOST_HARDWARE), aarch64 arm64))
+  TARGET_ARCH := arm64
+else ifneq (, $(filter $(HOST_HARDWARE), armv8l armv7l arm))
+  TARGET_ARCH := arm
+else ifneq (, $(filter $(HOST_HARDWARE), riscv64))
+  TARGET_ARCH := riscv64
+else
+  ifeq (, $(filter $(HOST_HARDWARE), x86_64 amd64 x64))
+    $(warning unknown machine hardware name $(HOST_HARDWARE), assuming amd64)
+  endif
+  TARGET_ARCH := amd64
+endif
+endif
+
 DOCKER ?= docker
 
 # https://reproducible-builds.org/docs/source-date-epoch/#makefile
@@ -14,7 +30,7 @@ SOURCE_DATE_EPOCH ?= $(shell git log -1 --pretty=%ct || date -u +%s)
 
 bindir = staging/${TARGET_OS}/bin
 posix_bins = runc kubelet containerd containerd-shim containerd-shim-runc-v2 kube-apiserver kube-scheduler kube-controller-manager etcd kine konnectivity-server xtables-legacy-multi xtables-nft-multi keepalived
-windows_bins = kubelet.exe kube-proxy.exe containerd.exe containerd-shim-runhcs-v1.exe
+windows_bins = kubelet.exe containerd.exe containerd-shim-runhcs-v1.exe
 
 ifeq ($(TARGET_OS),windows)
 bins = ${windows_bins}
@@ -63,7 +79,7 @@ $(bindir)/xtables-legacy-multi: .container.iptables
 $(bindir)/xtables-nft-multi: .container.iptables
 $(bindir)/keepalived: .container.keepalived
 
-$(bindir)/kubelet.exe $(bindir)/kube-proxy.exe: .container.kubernetes.windows
+$(bindir)/kubelet.exe: .container.kubernetes.windows
 $(bindir)/containerd.exe $(bindir)/containerd-shim-runhcs-v1.exe: .container.containerd.windows
 
 $(addprefix $(bindir)/, $(bins)): | $(bindir)
@@ -88,6 +104,7 @@ build_docker_image = \
 	$(DOCKER) build --progress=plain --iidfile '$@' -t k0sbuild$(basename $@):latest \
 	  --build-arg BUILDKIT_DOCKERFILE_CHECK=skip=InvalidDefaultArgInFrom \
 	  --build-arg TARGET_OS=$(if $(findstring .windows.stamp,$@),windows,linux) \
+	  --build-arg TARGET_ARCH=$(TARGET_ARCH) \
 	  --build-arg CONTAINERD_BINS="$(containerd_bins)" \
 	  --build-arg KUBERNETES_BINS="$(kubernetes_bins)" \
 	  --build-arg VERSION=$($(patsubst %/Dockerfile,%,$<)_version) \

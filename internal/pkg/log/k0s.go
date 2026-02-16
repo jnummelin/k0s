@@ -16,10 +16,16 @@ func InitLogging() {
 	customFormatter.FullTimestamp = true
 	logrus.SetFormatter(customFormatter)
 
+	initBuffer()
+
 	cfssllog.SetLogger((*cfsslAdapter)(logrus.WithField("component", "cfssl")))
 	crlog.SetLogger(logrusr.New(logrus.WithField("component", "controller-runtime")))
 
 	SetWarnLevel()
+}
+
+func ShutdownLogging() {
+	shutdownBuffer()
 }
 
 func SetDebugLevel() {
