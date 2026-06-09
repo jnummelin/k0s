@@ -135,6 +135,14 @@ jobs:
           pattern: k0s-{linux,windows}-amd64
           merge-multiple: true
 
+      # Test that the airgap list has expected number of entries on Windows
+      - name: Airgap image list
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          $count = (./k0s.exe airgap list-images | Measure-Object -Line).Lines
+          if ($count -ne 4) { throw "Expected 4 airgap images, got $count" }
       - name: Install and start k0s controller
         id: start-controller
         run: |
