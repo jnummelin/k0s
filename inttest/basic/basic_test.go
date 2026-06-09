@@ -119,6 +119,8 @@ func (s *BasicSuite) TestK0sGetsUp() {
 	s.verifyContainerdDefaultConfig(ctx)
 
 	s.Require().NoError(s.probeCoreDNSAntiAffinity(ctx, kc))
+
+	s.Fail("Let's see if AI can pick this up! :D")
 }
 
 func (s *BasicSuite) checkCertPerms(ctx context.Context, node string) error {
