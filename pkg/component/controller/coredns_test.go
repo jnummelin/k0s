@@ -10,7 +10,6 @@ import (
 	"github.com/k0sproject/k0s/internal/pkg/templatewriter"
 	"github.com/k0sproject/k0s/internal/testutil"
 	"github.com/k0sproject/k0s/pkg/apis/k0s/v1beta1"
-	"github.com/k0sproject/k0s/pkg/component/controller/leaderelector"
 	"github.com/k0sproject/k0s/pkg/leaderelection"
 
 	"github.com/sirupsen/logrus"
@@ -50,7 +49,7 @@ func TestCoreDNS_Reconcile_Leading(t *testing.T) {
 		dnsAddress:    "10.96.0.10",
 		client:        metadatafake.NewSimpleMetadataClient(metadatafake.NewTestScheme()),
 		clientFactory: clients,
-		leaderElector: leaderelector.Off(),
+		leaderStatus:  func() (leaderelection.Status, <-chan struct{}) { return leaderelection.StatusLeading, nil },
 		log:           logrus.WithField("component", "coredns"),
 	}
 
@@ -67,7 +66,7 @@ func TestCoreDNS_Reconcile_NotLeading(t *testing.T) {
 		dnsAddress:    "10.96.0.10",
 		client:        metadatafake.NewSimpleMetadataClient(metadatafake.NewTestScheme()),
 		clientFactory: clients,
-		leaderElector: pendingLeaderElector{},
+		leaderStatus:  func() (leaderelection.Status, <-chan struct{}) { return leaderelection.StatusPending, nil },
 		log:           logrus.WithField("component", "coredns"),
 	}
 
@@ -77,16 +76,6 @@ func TestCoreDNS_Reconcile_NotLeading(t *testing.T) {
 	assert.True(t, apierrors.IsNotFound(err), "a non-leader must not apply the coredns stack, got: %v", err)
 	lastKnownClusterConfig, _ := c.lastKnownClusterConfig.Peek()
 	assert.NotNil(t, lastKnownClusterConfig, "lastKnownClusterConfig must still be tracked so a later leadership change gets picked up")
-}
-
-// pendingLeaderElector is a [leaderelector.Interface] that never leads.
-type pendingLeaderElector struct{}
-
-func (pendingLeaderElector) IsLeader() bool                  { return false }
-func (pendingLeaderElector) AddAcquiredLeaseCallback(func()) {}
-func (pendingLeaderElector) AddLostLeaseCallback(func())     {}
-func (pendingLeaderElector) CurrentStatus() (leaderelection.Status, <-chan struct{}) {
-	return leaderelection.StatusPending, nil
 }
 
 func Test_replicaCount(t *testing.T) {

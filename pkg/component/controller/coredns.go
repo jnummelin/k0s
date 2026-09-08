@@ -13,7 +13,6 @@ import (
 
 	"github.com/k0sproject/k0s/internal/sync/value"
 	"github.com/k0sproject/k0s/pkg/applier"
-	"github.com/k0sproject/k0s/pkg/component/controller/leaderelector"
 	"github.com/k0sproject/k0s/pkg/component/manager"
 	"github.com/k0sproject/k0s/pkg/leaderelection"
 
@@ -277,7 +276,7 @@ type CoreDNS struct {
 	clusterDomain          string
 	client                 metadata.Interface
 	clientFactory          k8sutil.ClientFactoryInterface
-	leaderElector          leaderelector.Interface
+	leaderStatus           leaderelection.StatusFunc
 	log                    *logrus.Entry
 	previousConfig         coreDNSConfig
 	previousPatches        v1beta1.Patches
@@ -297,7 +296,7 @@ type coreDNSConfig struct {
 }
 
 // NewCoreDNS creates new instance of CoreDNS component
-func NewCoreDNS(clientFactory k8sutil.ClientFactoryInterface, leaderElector leaderelector.Interface, nodeConfig *v1beta1.ClusterConfig) (*CoreDNS, error) {
+func NewCoreDNS(clientFactory k8sutil.ClientFactoryInterface, leaderStatus leaderelection.StatusFunc, nodeConfig *v1beta1.ClusterConfig) (*CoreDNS, error) {
 	dnsAddress, err := nodeConfig.Spec.Network.DNSAddress(nodeConfig.Spec.PrimaryAddressFamily())
 	if err != nil {
 		return nil, err
@@ -318,7 +317,7 @@ func NewCoreDNS(clientFactory k8sutil.ClientFactoryInterface, leaderElector lead
 		clusterDomain: nodeConfig.Spec.Network.ClusterDomain,
 		client:        client,
 		clientFactory: clientFactory,
-		leaderElector: leaderElector,
+		leaderStatus:  leaderStatus,
 		log:           logrus.WithField("component", "coredns"),
 	}, nil
 }
@@ -433,7 +432,10 @@ func (c *CoreDNS) Reconcile(ctx context.Context, clusterConfig *v1beta1.ClusterC
 	// retry once this instance becomes the leader.
 	c.lastKnownClusterConfig.Set(clusterConfig)
 
-	if status, _ := c.leaderElector.CurrentStatus(); status != leaderelection.StatusLeading {
+	ctx, cancel := leaderelection.LeaderContext(ctx, c.leaderStatus)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		c.log.Debugf("Skipping reconciliation: %v", context.Cause(ctx))
 		return nil
 	}
 
